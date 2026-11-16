@@ -343,7 +343,16 @@ function seed(){
 }
 let S;
 try{const r=localStorage.getItem(KEY);S=r?JSON.parse(r):seed()}catch(e){S=seed()}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){toast('⚠️ Penyimpanan browser penuh / tidak tersedia')}}
+let API=false,TOKEN='';try{TOKEN=sessionStorage.getItem('kasirku_tok')||''}catch(e){}
+function save(){if(API){try{localStorage.setItem('kasirku_kasir',S.set.kasir||'')}catch(e){}return}try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){toast('⚠️ Penyimpanan browser penuh / tidak tersedia')}}
+async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:{'content-type':'application/json',...(TOKEN?{authorization:'Bearer '+TOKEN}:{})},body:body?JSON.stringify(body):undefined});
+  const j=await r.json().catch(()=>({error:'Server tidak merespon dengan benar'}));if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
+async function reload(){const d=await api('/api/bootstrap');let k='';try{k=localStorage.getItem('kasirku_kasir')||''}catch(e){}
+  S={v:1,cats:d.cats,products:d.products,members:d.members,trx:d.trx,seq:0,set:{...d.set,kasir:d.set.kasirs.includes(k)?k:(d.set.kasirs[0]||''),admin:{u:d.set.adminU||'',p:''}}};
+  if(typeof U!=='undefined')U.admin=!!d.admin;
+  if(!d.admin&&TOKEN){TOKEN='';try{sessionStorage.removeItem('kasirku_tok')}catch(e){}}return d}
+// kirim perubahan ke Cloudflare D1 (mode online); jika gagal, data dimuat ulang dari server
+async function op(name,data){if(!API)return true;try{await api('/api/op',{op:name,data});return true}catch(e){toast('✗ '+e.message);try{await reload()}catch(_){}render();return false}}
 if(S.set.store==='Toko Berkah Jaya')S.set.store='DhewaMart';
 save();
 
@@ -434,10 +443,11 @@ function loginCard(){
   <button class="btn pri block lg" style="margin-top:16px" onclick="doLogin()">Masuk</button>
   <p class="xs mut" style="margin-top:12px">Default: <b>admin</b> / <b>admin123</b> — ganti di Pengaturan setelah login.</p></div>`;
 }
-function doLogin(){const u=$('#lu').value.trim(),p=$('#lp').value;
+async function doLogin(){const u=$('#lu').value.trim(),p=$('#lp').value;
+  if(API){try{const r=await api('/api/login',{u,p});TOKEN=r.token;try{sessionStorage.setItem('kasirku_tok',TOKEN)}catch(e){}await reload();render();toast('✓ Login admin berhasil')}catch(e){toast('✗ '+e.message)}return}
   if(u===S.set.admin.u&&p===S.set.admin.p){U.admin=true;try{sessionStorage.setItem('kasirku_adm','1')}catch(e){}render();toast('✓ Login admin berhasil')}
   else toast('✗ Username / password salah')}
-function logout(){U.admin=false;try{sessionStorage.removeItem('kasirku_adm')}catch(e){}if(VIEWS[U.view][2])U.view=U.mode==='desktop'?'kasir':'kasir';render();toast('Keluar dari mode admin')}
+function logout(){U.admin=false;TOKEN='';try{sessionStorage.removeItem('kasirku_tok')}catch(e){}try{sessionStorage.removeItem('kasirku_adm')}catch(e){}if(VIEWS[U.view][2])U.view=U.mode==='desktop'?'kasir':'kasir';render();toast('Keluar dari mode admin')}
 
 /* ================== KASIR ================== */
 function vKasir(){
@@ -513,9 +523,9 @@ function pickMember(q=''){
 function memberPickList(list){return list.length?list.map(m=>`<button class="li" style="box-shadow:none;border:1.5px solid var(--line)" onclick="chooseMember('${m.id}')"><div class="av">${esc(m.name[0])}</div><div class="f1"><div class="b">${esc(m.name)}</div><div class="xs mut">${esc(m.phone)}</div></div><span class="badge y">${ic('star',11)} ${m.points}</span></button>`).join(''):'<div class="empty" style="padding:20px">Member tidak ditemukan</div>'}
 function pickMemberList(q){const ql=q.toLowerCase();$('#mlist').innerHTML=memberPickList(S.members.filter(m=>m.name.toLowerCase().includes(ql)||m.phone.includes(ql)).slice(0,30))}
 function chooseMember(id){U.member=id;U.usePts=false;closeModal();if(U.mode==='mobile'){render();openCart()}else refreshKasir()}
-function quickMember(){const n=$('#nmn').value.trim(),p=$('#nmp').value.trim();if(!n){toast('Isi nama member');return}
+async function quickMember(){const n=$('#nmn').value.trim(),p=$('#nmp').value.trim();if(!n){toast('Isi nama member');return}
   if(p&&S.members.find(m=>m.phone===p)){toast('No. HP sudah terdaftar');return}
-  const m={id:uid(),name:n,phone:p,points:0,joined:Date.now()};S.members.unshift(m);save();toast('✓ Member terdaftar');chooseMember(m.id)}
+  const m={id:uid(),name:n,phone:p,points:0,joined:Date.now()};if(!(await op('member.add',m)))return;S.members.unshift(m);save();toast('✓ Member terdaftar');chooseMember(m.id)}
 function pickKasir(){
   openModal(`${mh('Kasir Bertugas')}<p class="mut sm" style="margin-bottom:12px">Pilih nama kasir yang sedang berjaga. Daftar kasir diatur di Pengaturan.</p>
   ${S.set.kasirs.length?S.set.kasirs.map(k=>`<button class="li" style="box-shadow:none;border:1.5px solid ${k===S.set.kasir?'var(--pri)':'var(--line)'}" onclick="S.set.kasir='${esc(k).replace(/'/g,"\\'")}';save();closeModal();render()"><div class="av">${esc(k[0]||'?')}</div><div class="f1 b">${esc(k)}</div>${k===S.set.kasir?`<span style="color:var(--pri)">${ic('check')}</span>`:''}</button>`).join(''):'<div class="empty">Belum ada kasir</div>'}
@@ -571,8 +581,12 @@ function payCash(){
 function cashCalc(){const el=$('#cash');const v=num(el.value);el.value=v?v.toLocaleString('id-ID'):'';const t=calc().total;
   $('#chg').innerHTML=v>=t?`Kembalian<div style="font-size:26px;font-weight:800;color:var(--pri)">${rp(v-t)}</div>`:`<span style="color:var(--red)">Kurang ${rp(t-v)}</span>`;
   $('#cashOk').disabled=v<t}
-function finish(method,paid){
+async function finish(method,paid){
   const c=calc();if(!checkCart())return;
+  if(API){if(U._busy)return;U._busy=1;try{
+    const r=await api('/api/op',{op:'trx',data:{items:U.cart,member:U.member,usePts:U.usePts,method,paid,kasir:S.set.kasir}});
+    S.trx.unshift(r.trx);r.stocks.forEach(x=>{const p=prod(x.id);if(p)p.stock=x.stock});if(r.member){const m=memb(r.member.id);if(m)m.points=r.member.points}
+    U.cart=[];U.member=null;U.usePts=false;closeModal();render();showReceipt(r.trx.id,true)}catch(e){toast('✗ '+e.message)}finally{U._busy=0}return}
   const items=U.cart.map(ci=>{const p=prod(ci.id);p.stock-=ci.qty;return{id:p.id,name:p.name,cat:p.cat,price:p.price,cost:p.cost||0,qty:ci.qty}});
   if(c.m){c.m.points=c.m.points-c.pts+c.earn}
   S.seq++;const d=new Date();
@@ -638,12 +652,14 @@ function editMember(id){const m=id?memb(id):{name:'',phone:'',points:0};const tx
   <label class="lb">Nama</label><input id="mn" class="inp" value="${esc(m.name)}"><label class="lb">No. HP / WhatsApp</label><input id="mp" class="inp" inputmode="tel" value="${esc(m.phone)}">
   ${id&&U.admin?`<label class="lb">Koreksi saldo poin (admin)</label><input id="mpt" class="inp" inputmode="numeric" value="${m.points}">`:''}
   <button class="btn pri block lg" style="margin-top:16px" onclick="saveMember('${id||''}')">${ic('check')} Simpan</button>
-  ${id?`<div class="row2" style="margin-top:8px"><button class="btn ghost" onclick="U.member='${id}';U.usePts=false;go('kasir')">${ic('cart',17)} Belanja</button>${U.admin?`<button class="btn ghost" style="color:var(--red)" onclick="ask('Hapus member <b>${esc(m.name)}</b>?',()=>{S.members=S.members.filter(x=>x.id!=='${id}');save();render();toast('Member dihapus')},1)">${ic('trash',17)} Hapus</button>`:'<span></span>'}</div>
+  ${id?`<div class="row2" style="margin-top:8px"><button class="btn ghost" onclick="U.member='${id}';U.usePts=false;go('kasir')">${ic('cart',17)} Belanja</button>${U.admin?`<button class="btn ghost" style="color:var(--red)" onclick="ask('Hapus member <b>${esc(m.name)}</b>?',()=>{op('member.delete',{id:'${id}'});S.members=S.members.filter(x=>x.id!=='${id}');save();render();toast('Member dihapus')},1)">${ic('trash',17)} Hapus</button>`:'<span></span>'}</div>
   ${tx.length?`<div class="sec-t">Transaksi terakhir</div>${tx.slice(0,5).map(t=>`<div class="row sp sm" style="padding:8px 0;border-bottom:1px dashed var(--line)"><span>${fdt(t.date)}</span><span class="b">${rp(t.total)}</span><span class="badge y">+${t.earn}</span></div>`).join('')}`:''}`:''}`);
 }
-function saveMember(id){const n=$('#mn').value.trim(),p=$('#mp').value.trim();if(!n){toast('Isi nama');return}
+async function saveMember(id){const n=$('#mn').value.trim(),p=$('#mp').value.trim();if(!n){toast('Isi nama');return}
   if(p&&S.members.find(m=>m.phone===p&&m.id!==id)){toast('No. HP sudah dipakai member lain');return}
-  if(id){const m=memb(id);m.name=n;m.phone=p;if($('#mpt'))m.points=num($('#mpt').value)}else S.members.unshift({id:uid(),name:n,phone:p,points:0,joined:Date.now()});
+  const pts=$('#mpt')?num($('#mpt').value):null;const nm={id:id||uid(),name:n,phone:p,points:0,joined:Date.now()};
+  if(!(await op(id?'member.update':'member.add',id?{id,name:n,phone:p,points:pts}:nm)))return;
+  if(id){const m=memb(id);m.name=n;m.phone=p;if(pts!=null)m.points=pts}else S.members.unshift(nm);
   save();closeModal();render();toast('✓ Member disimpan')}
 
 /* ================== PRODUK (ADMIN) ================== */
@@ -679,22 +695,23 @@ function editProd(id){const p=id?prod(id):{name:'',cat:U.pcat!=='all'?U.pcat:S.c
   <div><label class="lb">Stok minimum (alert)</label><input id="pm" class="inp" inputmode="numeric" value="${p.min??5}"></div>
   <div class="full"><label class="lb">SKU / Barcode (opsional)</label><input id="pk" class="inp" value="${esc(p.sku||'')}"></div></div>
   <button class="btn pri block lg" style="margin-top:16px" onclick="saveProd('${id||''}')">${ic('check')} Simpan Produk</button>
-  ${id?`<button class="btn ghost block" style="margin-top:8px;color:var(--red)" onclick="ask('Hapus produk <b>${esc(p.name)}</b>?',()=>{S.products=S.products.filter(x=>x.id!=='${id}');U.cart=U.cart.filter(x=>x.id!=='${id}');save();render();toast('Produk dihapus')},1)">${ic('trash',17)} Hapus Produk</button>`:''}`,'wide');
+  ${id?`<button class="btn ghost block" style="margin-top:8px;color:var(--red)" onclick="ask('Hapus produk <b>${esc(p.name)}</b>?',()=>{op('product.delete',{id:'${id}'});S.products=S.products.filter(x=>x.id!=='${id}');U.cart=U.cart.filter(x=>x.id!=='${id}');save();render();toast('Produk dihapus')},1)">${ic('trash',17)} Hapus Produk</button>`:''}`,'wide');
 }
 function loadImg(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const im=new Image();im.onload=()=>{const c=document.createElement('canvas');const s=240;const k=Math.min(im.width,im.height);c.width=c.height=s;
   c.getContext('2d').drawImage(im,(im.width-k)/2,(im.height-k)/2,k,k,0,0,s,s);_img=c.toDataURL('image/jpeg',.72);$('#imgprev').innerHTML=`<img src="${_img}" style="width:100%;height:100%;object-fit:cover"><input type="file" accept="image/*" hidden onchange="loadImg(this)">`};im.src=e.target.result};r.readAsDataURL(f)}
-function saveProd(id){const n=$('#pn').value.trim(),pr=num($('#pp').value);if(!n){toast('Isi nama produk');return}if(!pr){toast('Isi harga jual');return}
+async function saveProd(id){const n=$('#pn').value.trim(),pr=num($('#pp').value);if(!n){toast('Isi nama produk');return}if(!pr){toast('Isi harga jual');return}
   const d={name:n,cat:$('#pc').value,ico:$('#pi').value.trim(),cost:num($('#pco').value),price:pr,stock:num($('#ps').value),min:num($('#pm').value),sku:$('#pk').value.trim(),img:_img};
-  if(id)Object.assign(prod(id),d);else S.products.unshift({id:uid(),...d});save();closeModal();render();toast('✓ Produk disimpan')}
+  const pid=id||uid();if(!(await op('product.save',{id:pid,...d})))return;
+  if(id)Object.assign(prod(id),d);else S.products.unshift({id:pid,...d});save();closeModal();render();toast('✓ Produk disimpan')}
 function restock(id){const p=prod(id);openModal(`${mh('Tambah Stok')}<div class="li" style="box-shadow:none;border:1.5px solid var(--line);margin-top:8px">${thumb(p)}<div class="f1"><b>${esc(p.name)}</b><div class="xs mut">Stok sekarang: <b>${p.stock}</b></div></div></div>
   <label class="lb">Jumlah masuk</label><input id="rs" class="inp big" inputmode="numeric" placeholder="0">
   <div class="row" style="margin-top:10px">${[6,12,24,50].map(v=>`<button class="btn out sm" onclick="$('#rs').value=${v}">+${v}</button>`).join('')}</div>
-  <button class="btn pri block lg" style="margin-top:16px" onclick="const v=num($('#rs').value);if(!v){toast('Isi jumlah');return};prod('${id}').stock+=v;save();closeModal();render();toast('✓ Stok ditambah '+v)">${ic('check')} Simpan</button>`);setTimeout(()=>$('#rs').focus(),50)}
+  <button class="btn pri block lg" style="margin-top:16px" onclick="const v=num($('#rs').value);if(!v){toast('Isi jumlah');return};op('product.restock',{id:'${id}',qty:v});prod('${id}').stock+=v;save();closeModal();render();toast('✓ Stok ditambah '+v)">${ic('check')} Simpan</button>`);setTimeout(()=>$('#rs').focus(),50)}
 function manageCats(){
   openModal(`${mh('Kelola Kategori')}<div style="margin:8px 0">${S.cats.map(c=>{const n=S.products.filter(p=>p.cat===c.id).length;return `<div class="row" style="padding:9px 0;border-bottom:1px dashed var(--line)"><span style="font-size:22px;width:32px">${c.ico}</span><div class="f1"><b>${esc(c.name)}</b><div class="xs mut">${n} produk</div></div>
-  <button class="ibtn" style="width:32px;height:32px" onclick="${n?`toast('Kategori masih dipakai ${n} produk')`:`S.cats=S.cats.filter(x=>x.id!=='${c.id}');save();manageCats();render()`}">${ic('trash',15)}</button></div>`}).join('')}</div>
+  <button class="ibtn" style="width:32px;height:32px" onclick="${n?`toast('Kategori masih dipakai ${n} produk')`:`op('cat.delete',{id:'${c.id}'});S.cats=S.cats.filter(x=>x.id!=='${c.id}');save();manageCats();render()`}">${ic('trash',15)}</button></div>`}).join('')}</div>
   <div class="sec-t">+ Kategori baru</div><div class="row"><input id="cie" class="inp" style="width:70px;text-align:center" placeholder="🏷️" maxlength="4"><input id="cnm" class="inp f1" placeholder="Nama kategori"></div>
-  <button class="btn pri block" style="margin-top:10px" onclick="const n=$('#cnm').value.trim();if(!n)return toast('Isi nama');S.cats.push({id:uid(),name:n,ico:$('#cie').value.trim()||'🏷️'});save();manageCats();render();toast('✓ Kategori ditambah')">Tambah Kategori</button>`);
+  <button class="btn pri block" style="margin-top:10px" onclick="const n=$('#cnm').value.trim();if(!n)return toast('Isi nama');const c={id:uid(),name:n,ico:$('#cie').value.trim()||'🏷️'};op('cat.add',c);S.cats.push(c);save();manageCats();render();toast('✓ Kategori ditambah')">Tambah Kategori</button>`);
 }
 
 /* ================== SETELAN ================== */
@@ -721,25 +738,28 @@ function vSetelan(){
   <label class="lb">String QRIS statis</label><textarea id="s_qris" class="inp" placeholder="00020101021126...6304XXXX">${esc(s.qris)}</textarea>
   ${s.qris?`<div class="xs" style="margin-top:6px">${dynQris(s.qris,1000)?`<span class="badge g">✓ Valid · ${esc(qrisMerchant())}</span>`:'<span class="badge rd">✗ Format QRIS tidak valid</span>'}</div>`:''}
   <label class="lb">…atau upload gambar QRIS (pelanggan input nominal sendiri)</label>
-  <div class="row"><label class="btn ghost sm">${ic('image',15)} Pilih gambar<input type="file" accept="image/*" hidden onchange="loadQrisImg(this)"></label>${s.qrisImg?`<img src="${s.qrisImg}" style="height:44px;border-radius:6px"><button class="btn ghost sm" onclick="S.set.qrisImg='';save();render()">Hapus</button>`:'<span class="xs mut">Belum ada</span>'}</div></div>`;
+  <div class="row"><label class="btn ghost sm">${ic('image',15)} Pilih gambar<input type="file" accept="image/*" hidden onchange="loadQrisImg(this)"></label>${s.qrisImg?`<img src="${s.qrisImg}" style="height:44px;border-radius:6px"><button class="btn ghost sm" onclick="S.set.qrisImg='';op('qrisImg',{img:''});save();render()">Hapus</button>`:'<span class="xs mut">Belum ada</span>'}</div></div>`;
   const akun=`<div class="setcard"><h4><span class="hi">${ic('lock')}</span>Akun Admin</h4>
   <div class="fgrid"><div><label class="lb">Username</label><input id="s_u" class="inp" value="${esc(s.admin.u)}"></div><div><label class="lb">Password baru</label><input id="s_p" class="inp" type="password" placeholder="kosongkan jika tetap"></div></div></div>`;
-  const data=`<div class="setcard"><h4><span class="hi">${ic('db')}</span>Data</h4><p class="xs mut" style="margin:4px 0 12px">Data tersimpan di browser perangkat ini. Data contoh (${S.trx.filter(t=>t.demo).length} transaksi demo) bisa dihapus sebelum mulai jualan.</p>
+  const data=API?`<div class="setcard"><h4><span class="hi">${ic('db')}</span>Data</h4><p class="sm" style="margin-top:8px"><span class="badge g">● Online</span> Tersimpan di <b>Cloudflare D1</b> — HP & laptop memakai data yang sama, otomatis sinkron tiap 30 detik.</p>
+  ${S.trx.some(t=>t.demo)?`<button class="btn ghost block" style="margin-top:10px" onclick="ask('Hapus semua transaksi <b>demo</b>?',async()=>{if(await op('trx.deleteDemo',{})){S.trx=S.trx.filter(t=>!t.demo);render();toast('Transaksi demo dihapus')}})">Hapus data demo</button>`:''}</div>`
+  :`<div class="setcard"><h4><span class="hi">${ic('db')}</span>Data</h4><p class="xs mut" style="margin:4px 0 12px">Data tersimpan di browser perangkat ini. Data contoh (${S.trx.filter(t=>t.demo).length} transaksi demo) bisa dihapus sebelum mulai jualan.</p>
   <div class="row2"><button class="btn ghost" onclick="ask('Hapus semua transaksi <b>demo</b>?',()=>{S.trx=S.trx.filter(t=>!t.demo);save();render();toast('Transaksi demo dihapus')})">Hapus data demo</button>
   <button class="btn ghost" style="color:var(--red)" onclick="ask('Reset SEMUA data (produk, member, transaksi) ke awal?',()=>{S=seed();save();U.cart=[];render();toast('Data direset')},1)">Reset semua</button></div></div>`;
   return `<div class="${m==='desktop'?'desk-cols':''}"><div>${tampilan}${kasir}${toko}${akun}</div><div>${poin}${qris}${data}</div></div>
   <div style="position:sticky;bottom:${m==='mobile'?'-100px':'-30px'};padding:10px 0;background:linear-gradient(transparent,var(--bg) 30%)"><div class="row2" style="max-width:520px;margin:0 auto"><button class="btn ghost lg" onclick="logout()">${ic('logout',18)} Keluar Admin</button><button class="btn pri lg" onclick="saveSettings()">${ic('check')} Simpan</button></div></div>
   <div class="credit">Develop Program By <b>Nurman Catra</b></div>`;
 }
-function addKasir(){const n=$('#nk').value.trim();if(!n)return;if(S.set.kasirs.includes(n)){toast('Nama sudah ada');return}S.set.kasirs.push(n);if(!S.set.kasir)S.set.kasir=n;save();render();toast('✓ Kasir ditambah')}
-function delKasir(i){const k=S.set.kasirs[i];S.set.kasirs.splice(i,1);if(S.set.kasir===k)S.set.kasir=S.set.kasirs[0]||'';save();render()}
+function addKasir(){const n=$('#nk').value.trim();if(!n)return;if(S.set.kasirs.includes(n)){toast('Nama sudah ada');return}S.set.kasirs.push(n);if(!S.set.kasir)S.set.kasir=n;op('kasir.set',{kasirs:S.set.kasirs});save();render();toast('✓ Kasir ditambah')}
+function delKasir(i){const k=S.set.kasirs[i];S.set.kasirs.splice(i,1);if(S.set.kasir===k)S.set.kasir=S.set.kasirs[0]||'';op('kasir.set',{kasirs:S.set.kasirs});save();render()}
 function loadQrisImg(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{const im=new Image();im.onload=()=>{const c=document.createElement('canvas');const k=Math.min(1,600/Math.max(im.width,im.height));c.width=im.width*k;c.height=im.height*k;
-  c.getContext('2d').drawImage(im,0,0,c.width,c.height);S.set.qrisImg=c.toDataURL('image/jpeg',.85);save();render();toast('✓ Gambar QRIS tersimpan')};im.src=e.target.result};r.readAsDataURL(f)}
-function saveSettings(){const s=S.set;const g=id=>$('#'+id)?$('#'+id).value:null;
+  c.getContext('2d').drawImage(im,0,0,c.width,c.height);S.set.qrisImg=c.toDataURL('image/jpeg',.85);op('qrisImg',{img:S.set.qrisImg});save();render();toast('✓ Gambar QRIS tersimpan')};im.src=e.target.result};r.readAsDataURL(f)}
+async function saveSettings(){const s=S.set;const g=id=>$('#'+id)?$('#'+id).value:null;
   s.store=g('s_store').trim()||'Toko Saya';s.addr=g('s_addr').trim();s.phone=g('s_phone').trim();s.footer=g('s_footer').trim();
   s.pointPer=num(g('s_pp'))||10000;s.pointVal=num(g('s_pv'))||100;s.minRedeem=num(g('s_mr'));
   const q=g('s_qris').trim();if(q&&!dynQris(q,1000)){toast('✗ String QRIS tidak valid — cek lagi');return}s.qris=q;
-  const u=g('s_u').trim();if(u)s.admin.u=u;const p=g('s_p');if(p){if(p.length<4){toast('Password minimal 4 karakter');return}s.admin.p=p}
+  const u=g('s_u').trim();if(u)s.admin.u=u;const p=g('s_p');if(p){if(p.length<4){toast('Password minimal 4 karakter');return}if(!API)s.admin.p=p}
+  if(!(await op('settings.save',{store:s.store,addr:s.addr,phone:s.phone,footer:s.footer,pointPer:s.pointPer,pointVal:s.pointVal,minRedeem:s.minRedeem,qris:s.qris,adminU:u,adminP:p})))return;
   save();render();toast('✓ Pengaturan disimpan')}
 
 /* ================== DASHBOARD ================== */
@@ -788,7 +808,13 @@ function drawCharts(){
 }
 
 window.addEventListener('resize',()=>{if(U.view==='dashboard')drawCharts()});
-render();
+(async()=>{
+  if(location.protocol.startsWith('http')){try{await reload();API=true}catch(e){API=false}}
+  if(!API){S=S||seed()}
+  render();
+  setInterval(async()=>{const a=document.activeElement;if(!API||$('#modal').innerHTML||U.cart.length||(a&&['INPUT','TEXTAREA','SELECT'].includes(a.tagName)))return;
+    try{await reload();render()}catch(e){}},30000);
+})();
 </script>
 </body>
 </html>

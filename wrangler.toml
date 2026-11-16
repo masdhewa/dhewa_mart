@@ -1,0 +1,12 @@
+name = "dhewamart"
+main = "src/worker.js"
+compatibility_date = "2025-06-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dhewamart"
+database_id = "037e81fe-0add-4395-9af8-bd8932534181"
